@@ -438,7 +438,7 @@ Future<void> _loadGroups() async {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Паблики пользователя'),
+        title: const Text('Паблики'),
         actions: [
           IconButton(
             icon: const Icon(Icons.add),

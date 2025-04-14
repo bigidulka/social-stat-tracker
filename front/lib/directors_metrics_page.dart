@@ -1,66 +1,123 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:typed_data';
 import 'metrics_card_widget.dart';
 
-class MetricsPage extends StatefulWidget {
+// Импортируем файл, где определён SimpleMetricsCardTabs
+// import 'metrics_card_widget.dart';
+
+class DirectorsMetricsPage extends StatefulWidget {
   final String? token;
-  const MetricsPage({Key? key, this.token}) : super(key: key);
+
+  const DirectorsMetricsPage({Key? key, this.token}) : super(key: key);
 
   @override
-  State<MetricsPage> createState() => _MetricsPageState();
+  State<DirectorsMetricsPage> createState() => _DirectorsMetricsPageState();
 }
 
-class _MetricsPageState extends State<MetricsPage> {
-  // -- Данные для списка групп
-  List<dynamic> _userGroups = [];
+class _DirectorsMetricsPageState extends State<DirectorsMetricsPage> {
+  // Список аналитиков
+  List<dynamic> _analysts = [];
+  bool _isLoadingAnalysts = false;
+  int? _selectedAnalystId;
+  String _selectedAnalystName = '';
 
-  // -- Параметры фильтра / сортировки
+  // Группы выбранного аналитика
+  List<dynamic> _analystGroups = [];
+  bool _isLoadingGroups = false;
   String? _selectedGroup;
+
+  // Параметры для /vk_rout/metrics
   DateTime? _dateFrom;
   DateTime? _dateTo;
-  String _sortBy = 'date';        // date|likes|reposts|comments|views
-  Set<String> _filters = {};      // { 'text', 'photo', 'video' }
+  String _sortBy = 'date';
+  Set<String> _filters = {};
 
-  // -- Результат запроса /vk_rout/metrics
+  // Результат ответа /vk_rout/metrics
   Map<String, dynamic>? _metricsData;
+  bool _isLoadingMetrics = false;
 
-  // -- Признак загрузки
-  bool _isLoading = false;
-
-  /// Запоминаем, какие посты развёрнуты (ID поста -> bool).
+  // Для управления раскрытием постов
   Map<int, bool> _expandedPosts = {};
 
   @override
   void initState() {
     super.initState();
-    _fetchUserGroups();
+    _loadAnalysts();
   }
 
-  /// Загружаем список групп пользователя (/groups)
-  Future<void> _fetchUserGroups() async {
+  // Функция для вычисления количества дней в выбранном периоде
+  int _calculateDaysCount() {
+    if (_dateFrom == null || _dateTo == null) {
+      return 0;
+    }
+    return _dateTo!.difference(_dateFrom!).inDays + 1;
+  }
+
+  // Загрузка аналитиков
+  Future<void> _loadAnalysts() async {
     if (widget.token == null) return;
-    final url = Uri.parse('http://bigidulka2.ddns.net:8000/groups');
-    final response = await http.get(
-      url,
-      headers: {'Authorization': 'Bearer ${widget.token}'},
-    );
-    if (response.statusCode == 200) {
-      final List<dynamic> data = json.decode(utf8.decode(response.bodyBytes));
-      if (!mounted) return;
+    setState(() {
+      _isLoadingAnalysts = true;
+    });
+
+    final url = Uri.parse('http://bigidulka2.ddns.net:8000/directors/analysts?token=${widget.token}');
+    try {
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        if (decoded is List) {
+          setState(() {
+            _analysts = decoded;
+          });
+        }
+      }
+    } catch (e) {
+      // Обработка ошибок
+      print('Ошибка при загрузке аналитиков: $e');
+    } finally {
       setState(() {
-        _userGroups = data;
+        _isLoadingAnalysts = false;
       });
     }
   }
 
-  /// Запрашиваем /vk_rout/metrics с параметрами
+  // Загрузка групп выбранного аналитика
+  Future<void> _loadGroupsForAnalyst(int analystId) async {
+    if (widget.token == null) return;
+    setState(() {
+      _isLoadingGroups = true;
+      _analystGroups = [];
+      _metricsData = null;
+      _selectedGroup = null;
+    });
+
+    final url = Uri.parse('http://bigidulka2.ddns.net:8000/directors/$analystId/groups?token=${widget.token}');
+    try {
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final decoded = _decodeResponse(response);
+        if (decoded is List) {
+          setState(() {
+            _analystGroups = decoded;
+          });
+        }
+      }
+    } catch (e) {
+      print('Ошибка при загрузке групп аналитика: $e');
+    } finally {
+      setState(() {
+        _isLoadingGroups = false;
+      });
+    }
+  }
+
+  // Запрос метрик
   Future<void> _fetchMetrics() async {
     if (widget.token == null || _selectedGroup == null) return;
-
-    if (!mounted) return;
     setState(() {
-      _isLoading = true;
+      _isLoadingMetrics = true;
       _metricsData = null;
     });
 
@@ -69,14 +126,12 @@ class _MetricsPageState extends State<MetricsPage> {
       'sort_by': _sortBy,
     };
 
-    // Если указаны даты – добавим их
     if (_dateFrom != null && _dateTo != null) {
       final fromTs = _dateFrom!.millisecondsSinceEpoch ~/ 1000;
       final toTs = _dateTo!.millisecondsSinceEpoch ~/ 1000;
       queryParams['date_from'] = fromTs.toString();
       queryParams['date_to'] = toTs.toString();
     }
-    // Если заданы фильтры – собираем в строку 'text,photo,video'
     if (_filters.isNotEmpty) {
       queryParams['filters'] = _filters.join(',');
     }
@@ -90,45 +145,37 @@ class _MetricsPageState extends State<MetricsPage> {
       );
       if (response.statusCode == 200) {
         final data = json.decode(utf8.decode(response.bodyBytes));
-        if (!mounted) return;
         setState(() {
           _metricsData = data;
         });
       }
+    } catch (e) {
+      print('Ошибка при загрузке метрик: $e');
     } finally {
-      if (!mounted) return;
       setState(() {
-        _isLoading = false;
+        _isLoadingMetrics = false;
       });
     }
   }
 
-  /// Диалог выбора группы, периода, сортировки и фильтров
+  // Диалог для настроек фильтра
   void _showFilterDialog() {
-    // Локальные копии параметров
-    DateTime? localDateFrom = _dateFrom;
-    DateTime? localDateTo = _dateTo;
-    String? localSelectedGroup = _selectedGroup;
-    String localSortBy = _sortBy;
-    // Копируем, чтобы при отмене не перетереть
-    Set<String> localFilters = {..._filters};
-
     showDialog(
       context: context,
-      builder: (BuildContext context) {
+      builder: (BuildContext ctx) {
         return StatefulBuilder(
-          builder: (ctx, setStateDialog) {
-            // Утилита для чекбоксов фильтров
+          builder: (context, setStateDialog) {
+            // Функция для чекбоксов
             Widget buildFilterCheck(String label) {
               return CheckboxListTile(
                 title: Text(label),
-                value: localFilters.contains(label),
+                value: _filters.contains(label),
                 onChanged: (val) {
                   setStateDialog(() {
                     if (val == true) {
-                      localFilters.add(label);
+                      _filters.add(label);
                     } else {
-                      localFilters.remove(label);
+                      _filters.remove(label);
                     }
                   });
                 },
@@ -141,30 +188,66 @@ class _MetricsPageState extends State<MetricsPage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // -- Dropdown для выбора группы
-                    DropdownButton<String>(
+                    // Аналитики
+                    DropdownButton<int>(
                       isExpanded: true,
-                      value: localSelectedGroup,
-                      hint: const Text('Выберите группу'),
-                      items: _userGroups.map((grp) {
-                        final dbData = grp["db_data"] ?? {};
-                        final vkData = grp["vk_data"] ?? {};
-                        final groupName = vkData["name"] ?? dbData["name"] ?? 'Группа';
-                        final screenName = dbData["screen_name"] ?? '';
-                        return DropdownMenuItem<String>(
-                          value: screenName,
-                          child: Text(groupName),
+                      value: _selectedAnalystId,
+                      hint: const Text('Выбери аналитика'),
+                      items: _analysts.map((a) {
+                        final id = a['id'] as int?;
+                        final name = a['name'] ?? 'Без имени';
+                        final username = a['username'] ?? '';
+                        return DropdownMenuItem<int>(
+                          value: id,
+                          child: Text('$name (логин: $username)'),
                         );
                       }).toList(),
-                      onChanged: (val) {
+                      onChanged: (val) async {
+                        if (val == null) return;
                         setStateDialog(() {
-                          localSelectedGroup = val;
+                          _selectedAnalystId = val;
+                          final foundAnalyst = _analysts.firstWhere(
+                            (x) => x['id'] == val,
+                            orElse: () => null,
+                          );
+                          _selectedAnalystName = foundAnalyst?['name'] ?? '';
+                          _analystGroups.clear();
+                          _selectedGroup = null;
+                          _metricsData = null;
                         });
+                        await _loadGroupsForAnalyst(val);
+                        setStateDialog(() {});
                       },
                     ),
                     const SizedBox(height: 12),
 
-                    // -- Быстрые кнопки периода
+                    // Группы
+                    _isLoadingGroups
+                        ? const Center(child: CircularProgressIndicator())
+                        : DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedGroup,
+                            hint: const Text('Выбери группу'),
+                            items: _analystGroups.map((grp) {
+                              final dbData = grp["db_data"] ?? {};
+                              final vkData = grp["vk_data"] ?? {};
+                              final groupName = vkData["name"] ?? dbData["name"] ?? 'Группа';
+                              final screenName = dbData["screen_name"] ?? '';
+                              return DropdownMenuItem<String>(
+                                value: screenName,
+                                child: Text(groupName),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              setStateDialog(() {
+                                _selectedGroup = val;
+                                _metricsData = null;
+                              });
+                            },
+                          ),
+                    const SizedBox(height: 12),
+
+                    // Кнопки быстрого периода
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
@@ -172,8 +255,8 @@ class _MetricsPageState extends State<MetricsPage> {
                           onPressed: () {
                             final now = DateTime.now();
                             setStateDialog(() {
-                              localDateFrom = now.subtract(const Duration(days: 7));
-                              localDateTo = now;
+                              _dateFrom = now.subtract(const Duration(days: 7));
+                              _dateTo = now;
                             });
                           },
                           child: const Text('Неделя'),
@@ -182,8 +265,8 @@ class _MetricsPageState extends State<MetricsPage> {
                           onPressed: () {
                             final now = DateTime.now();
                             setStateDialog(() {
-                              localDateFrom = DateTime(now.year, now.month - 1, now.day);
-                              localDateTo = now;
+                              _dateFrom = DateTime(now.year, now.month - 1, now.day);
+                              _dateTo = now;
                             });
                           },
                           child: const Text('Месяц'),
@@ -192,81 +275,83 @@ class _MetricsPageState extends State<MetricsPage> {
                           onPressed: () {
                             final now = DateTime.now();
                             setStateDialog(() {
-                              localDateFrom = DateTime(now.year - 1, now.month, now.day);
-                              localDateTo = now;
+                              _dateFrom = DateTime(now.year - 1, now.month, now.day);
+                              _dateTo = now;
                             });
                           },
                           child: const Text('Год'),
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 12),
-                    // -- Ручной выбор "от" "до"
+
+                    // Ручной выбор дат
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text('От:'),
                             TextButton(
                               onPressed: () async {
-                                final initDate = localDateFrom ?? DateTime.now().subtract(const Duration(days: 30));
+                                final initDate = _dateFrom ?? DateTime.now().subtract(const Duration(days: 30));
                                 final picked = await showDatePicker(
-                                  context: context,
+                                  context: ctx,
                                   initialDate: initDate,
                                   firstDate: DateTime(2010),
                                   lastDate: DateTime.now(),
                                 );
                                 if (picked != null) {
                                   setStateDialog(() {
-                                    localDateFrom = picked;
+                                    _dateFrom = picked;
                                   });
                                 }
                               },
-                              child: Text(localDateFrom == null
-                                  ? 'Выбрать'
-                                  : '${localDateFrom!.day}.${localDateFrom!.month}.${localDateFrom!.year}'),
+                              child: Text(
+                                _dateFrom == null
+                                    ? 'Выбрать'
+                                    : '${_dateFrom!.day}.${_dateFrom!.month}.${_dateFrom!.year}',
+                              ),
                             ),
                           ],
                         ),
                         Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text('До:'),
                             TextButton(
                               onPressed: () async {
-                                final initDate = localDateTo ?? DateTime.now();
+                                final initDate = _dateTo ?? DateTime.now();
                                 final picked = await showDatePicker(
-                                  context: context,
+                                  context: ctx,
                                   initialDate: initDate,
                                   firstDate: DateTime(2010),
                                   lastDate: DateTime.now(),
                                 );
                                 if (picked != null) {
                                   setStateDialog(() {
-                                    localDateTo = picked;
+                                    _dateTo = picked;
                                   });
                                 }
                               },
-                              child: Text(localDateTo == null
-                                  ? 'Выбрать'
-                                  : '${localDateTo!.day}.${localDateTo!.month}.${localDateTo!.year}'),
+                              child: Text(
+                                _dateTo == null
+                                    ? 'Выбрать'
+                                    : '${_dateTo!.day}.${_dateTo!.month}.${_dateTo!.year}',
+                              ),
                             ),
                           ],
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 12),
-                    // -- Сортировка
+
+                    // Сортировка
                     Row(
                       children: [
                         const Text('Сортировка:'),
                         const SizedBox(width: 8),
                         DropdownButton<String>(
-                          value: localSortBy,
+                          value: _sortBy,
                           items: const [
                             DropdownMenuItem(value: 'date', child: Text('По дате')),
                             DropdownMenuItem(value: 'likes', child: Text('По лайкам')),
@@ -276,15 +361,15 @@ class _MetricsPageState extends State<MetricsPage> {
                           ],
                           onChanged: (val) {
                             setStateDialog(() {
-                              localSortBy = val ?? 'date';
+                              _sortBy = val ?? 'date';
                             });
                           },
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 12),
-                    // -- Фильтр по контенту (text, photo, video)
+
+                    // Фильтры
                     const Text('Фильтры (мультивыбор):'),
                     buildFilterCheck('text'),
                     buildFilterCheck('photo'),
@@ -294,23 +379,12 @@ class _MetricsPageState extends State<MetricsPage> {
               ),
               actions: [
                 TextButton(
-                  onPressed: () {
-                    Navigator.of(context).pop(); // Закрываем диалог без сохранения
-                  },
+                  onPressed: () => Navigator.of(ctx).pop(),
                   child: const Text('Отмена'),
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    // Применяем выбранные настройки и сразу загружаем
-                    if (!mounted) return;
-                    setState(() {
-                      _selectedGroup = localSelectedGroup;
-                      _dateFrom = localDateFrom;
-                      _dateTo = localDateTo;
-                      _sortBy = localSortBy;
-                      _filters = localFilters;
-                    });
-                    Navigator.of(context).pop();
+                    Navigator.of(ctx).pop();
                     _fetchMetrics();
                   },
                   child: const Text('Загрузить'),
@@ -323,31 +397,22 @@ class _MetricsPageState extends State<MetricsPage> {
     );
   }
 
-  /// Открывает диалог с просмотром изображений (PageView).
-  void _showImageGallery(List<String> imageUrls, int initialIndex) {
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return Dialog(
-          insetPadding: const EdgeInsets.all(8),
-          child: GalleryViewer(imageUrls: imageUrls, initialIndex: initialIndex),
-        );
-      },
-    );
-  }
-
+  // Построение главного экрана
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Метрики'),
+        title: const Text('Метрики (директор)'),
         actions: [
-          if (_selectedGroup != null)
+          if (_selectedAnalystId != null || _selectedGroup != null)
             IconButton(
               icon: const Icon(Icons.close),
               tooltip: 'Сбросить выбор',
               onPressed: () {
                 setState(() {
+                  _selectedAnalystId = null;
+                  _selectedAnalystName = '';
+                  _analystGroups.clear();
                   _selectedGroup = null;
                   _metricsData = null;
                   _dateFrom = null;
@@ -358,82 +423,98 @@ class _MetricsPageState extends State<MetricsPage> {
             ),
         ],
       ),
-      body: _isLoading
+      body: _isLoadingAnalysts
           ? const Center(child: CircularProgressIndicator())
-          : _metricsData == null
-              ? Center(
-                  child: Card(
-                    elevation: 4,
-                    margin: const EdgeInsets.all(24),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.group, size: 64, color: Colors.blueAccent),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Группа не выбрана',
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Пожалуйста, выбери группу и период, чтобы загрузить метрики.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 24),
-                          ElevatedButton.icon(
-                            onPressed: _showFilterDialog,
-                            icon: const Icon(Icons.filter_alt),
-                            label: const Text('Выбрать'),
-                            style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                )
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      ExpansionTile(
-                        initiallyExpanded: false,
-                        title: const Text(
-                          'Метрики группы',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        children: [
-                          SimpleMetricsCardTabs(
-                            metricsData: _metricsData!,
-                            periodStart: _dateFrom == null
-                                ? '—'
-                                : '${_dateFrom!.day}.${_dateFrom!.month}.${_dateFrom!.year}',
-                            periodEnd: _dateTo == null
-                                ? '—'
-                                : '${_dateTo!.day}.${_dateTo!.month}.${_dateTo!.year}',
-                            daysCount: _calculateDaysCount(),
-                          ),
-                        ],
-                      ),
-                      _buildGroupHeader(_metricsData!["group_info"] ?? {}),
-                      _buildPostsList(_metricsData!["posts"] ?? []),
-                    ],
-                  ),
-                ),
+          : _buildBody(),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showFilterDialog,
+        child: const Icon(Icons.filter_alt),
+      ),
     );
   }
 
-  /// Шапка группы (header) с расширенной информацией
-  Widget _buildGroupHeader(Map<String, dynamic> info) {
-    if (info.isEmpty) return const Text('Нет данных о группе');
+  Widget _buildBody() {
+    if (_selectedAnalystId == null || _selectedGroup == null) {
+      return Center(
+        child: Card(
+          margin: const EdgeInsets.all(24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 4,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Icon(Icons.assessment, size: 64, color: Colors.blueAccent),
+                SizedBox(height: 16),
+                Text(
+                  'Выбери аналитика и паблик',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Через кнопку в правом нижнем углу укажи\nаналитика, паблик, даты и другие параметры.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
-    // Обложка
+    if (_isLoadingMetrics) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_metricsData == null) {
+      return const Center(
+        child: Text('Выберите настройки и нажмите "Загрузить"'),
+      );
+    }
+
+    // Добавляем SimpleMetricsCardTabs внутрь ExpansionTile для групповых метрик
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          // Пример: ExpansionTile с SimpleMetricsCardTabs
+          ExpansionTile(
+            initiallyExpanded: false,
+            title: const Text(
+              'Метрики группы',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            children: [
+              // Сам виджет SimpleMetricsCardTabs
+              SimpleMetricsCardTabs(
+                metricsData: _metricsData!,
+                periodStart: _dateFrom == null
+                    ? '—'
+                    : '${_dateFrom!.day}.${_dateFrom!.month}.${_dateFrom!.year}',
+                periodEnd: _dateTo == null
+                    ? '—'
+                    : '${_dateTo!.day}.${_dateTo!.month}.${_dateTo!.year}',
+                daysCount: _calculateDaysCount(),
+              ),
+            ],
+          ),
+
+          _buildGroupHeader(_metricsData!["group_info"] ?? {}),
+          _buildSummaryMetrics(),
+          _buildPostsList(_metricsData!["posts"] ?? []),
+        ],
+      ),
+    );
+  }
+
+  // Шапка группы
+  Widget _buildGroupHeader(Map<String, dynamic> info) {
+    if (info.isEmpty) {
+      return const Text('Нет информации о группе');
+    }
+
     String? coverUrl;
     if (info["cover"] != null && info["cover"]["images"] != null) {
       final images = info["cover"]["images"] as List;
@@ -484,9 +565,13 @@ class _MetricsPageState extends State<MetricsPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(name,
-                              style: const TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.bold)),
+                          Text(
+                            name,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                           const SizedBox(height: 4),
                           Text('vk.com/$screenName',
                               style: const TextStyle(color: Colors.blueGrey)),
@@ -540,35 +625,47 @@ class _MetricsPageState extends State<MetricsPage> {
     );
   }
 
-  /// Количество дней в выбранном периоде
-  int _calculateDaysCount() {
-    if (_dateFrom == null || _dateTo == null) return 0;
-    return _dateTo!.difference(_dateFrom!).inDays + 1;
+  // Короткая сводка метрик
+  Widget _buildSummaryMetrics() {
+    final data = _metricsData!["summary"] ?? {};
+    final postsCount = data["posts_count"] ?? 0;
+    final likes = data["sum_likes"] ?? 0;
+    final reposts = data["sum_reposts"] ?? 0;
+    final comments = data["sum_comments"] ?? 0;
+    final views = data["sum_views"] ?? 0;
+
+    return Card(
+      elevation: 4,
+      margin: const EdgeInsets.only(bottom: 16),
+      child: ListTile(
+        title: const Text('Сводка'),
+        subtitle: Text(
+          'Постов: $postsCount\n'
+          'Лайков: $likes, Репостов: $reposts, Комментариев: $comments, Просмотров: $views',
+        ),
+      ),
+    );
   }
 
-  /// Лента постов (с фото, текстом, статистикой) через ListView.builder
+  // Список постов
   Widget _buildPostsList(List<dynamic> posts) {
     if (posts.isEmpty) {
       return const Text('Нет постов за выбранный период или их невозможно отобразить.');
     }
-
-    // ListView.builder помогает не отрисовывать сразу все виджеты,
-    // а делать это по мере прокрутки (lazy rendering).
     return ListView.builder(
-      // Чтобы ListView.builder корректно работал внутри SingleChildScrollView:
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       itemCount: posts.length,
-      itemBuilder: (context, index) {
-        final item = posts[index];
-        return _buildPostCard(item);
+      itemBuilder: (ctx, i) {
+        final post = posts[i] as Map<String, dynamic>;
+        return _buildPostCard(post);
       },
     );
   }
 
-  /// Карточка одного поста
+  // Одна карточка поста
   Widget _buildPostCard(Map<String, dynamic> post) {
-    final postId = post["id"] ?? 0;  // для хранения expanded state
+    final postId = post["id"] ?? 0;
     final postText = post["text"] ?? '';
     final date = post["date"] != null
         ? DateTime.fromMillisecondsSinceEpoch(post["date"] * 1000)
@@ -579,15 +676,12 @@ class _MetricsPageState extends State<MetricsPage> {
     final comments = post["comments"]?["count"] ?? 0;
     final views = post["views"]?["count"] ?? 0;
 
-    // Решаем, какой объём текста показывать
     final bool isExpanded = _expandedPosts[postId] == true;
-    // Ограничим текст для предпросмотра
     const maxPreviewLength = 100;
-    String shortText = postText.length > maxPreviewLength
-        ? postText.substring(0, maxPreviewLength) + '...'
+    final shortText = postText.length > maxPreviewLength
+        ? '${postText.substring(0, maxPreviewLength)}...'
         : postText;
 
-    // Собираем все фото (type=photo), видео, ссылки и т.д.
     final attachments = post["attachments"] as List? ?? [];
     final List<String> photoUrls = [];
     final List<Widget> videoWidgets = [];
@@ -599,7 +693,6 @@ class _MetricsPageState extends State<MetricsPage> {
         final photo = att["photo"];
         if (photo != null) {
           final sizes = photo["sizes"] as List? ?? [];
-          // Найдём самую большую по ширине
           String bestUrl = '';
           int bestWidth = 0;
           for (var sz in sizes) {
@@ -618,7 +711,7 @@ class _MetricsPageState extends State<MetricsPage> {
         if (video != null) {
           final title = video["title"] ?? 'Видео';
           final thumbList = video["image"] as List? ?? [];
-          var bestThumb = '';
+          String bestThumb = '';
           int bestWidth = 0;
           for (var t in thumbList) {
             final w = t["width"] ?? 0;
@@ -627,27 +720,29 @@ class _MetricsPageState extends State<MetricsPage> {
               bestThumb = t["url"];
             }
           }
-          Widget w;
           if (bestThumb.isNotEmpty) {
-            w = Container(
-              margin: const EdgeInsets.only(top: 8),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Image.network(bestThumb),
-                  const Icon(Icons.play_circle_fill, size: 64, color: Colors.white70),
-                ],
+            videoWidgets.add(
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Image.network(bestThumb),
+                    const Icon(Icons.play_circle_fill, size: 64, color: Colors.white70),
+                  ],
+                ),
               ),
             );
           } else {
-            w = Container(
-              margin: const EdgeInsets.only(top: 8),
-              color: Colors.black12,
-              height: 200,
-              child: Center(child: Text(title)),
+            videoWidgets.add(
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                color: Colors.black12,
+                height: 200,
+                child: Center(child: Text(title)),
+              ),
             );
           }
-          videoWidgets.add(w);
         }
       } else if (type == "link") {
         final link = att["link"];
@@ -671,14 +766,12 @@ class _MetricsPageState extends State<MetricsPage> {
           );
         }
       }
-      // Можно обработать и другие типы
     }
 
-    // Строим GridView для фотографий
     Widget photosWidget = const SizedBox.shrink();
     if (photoUrls.isNotEmpty) {
-      const maxPhotosToShow = 1;
-      final bool hasExtra = photoUrls.length > maxPhotosToShow;
+      const maxPhotosToShow = 2;
+      final hasExtra = photoUrls.length > maxPhotosToShow;
       final visiblePhotos = hasExtra ? photoUrls.sublist(0, maxPhotosToShow) : photoUrls;
 
       photosWidget = Container(
@@ -692,13 +785,11 @@ class _MetricsPageState extends State<MetricsPage> {
             crossAxisSpacing: 8,
           ),
           itemCount: hasExtra ? visiblePhotos.length + 1 : visiblePhotos.length,
-          itemBuilder: (ctx, index) {
-            if (hasExtra && index == visiblePhotos.length) {
+          itemBuilder: (ctx, idx) {
+            if (hasExtra && idx == visiblePhotos.length) {
               final moreCount = photoUrls.length - maxPhotosToShow;
               return GestureDetector(
-                onTap: () {
-                  _showImageGallery(photoUrls, maxPhotosToShow);
-                },
+                onTap: () => _showImageGallery(photoUrls, maxPhotosToShow),
                 child: Container(
                   color: Colors.black26,
                   child: Center(
@@ -714,12 +805,9 @@ class _MetricsPageState extends State<MetricsPage> {
                 ),
               );
             }
-
-            final imageUrl = visiblePhotos[index];
+            final imageUrl = visiblePhotos[idx];
             return GestureDetector(
-              onTap: () {
-                _showImageGallery(photoUrls, index);
-              },
+              onTap: () => _showImageGallery(photoUrls, idx),
               child: Image.network(imageUrl, fit: BoxFit.cover),
             );
           },
@@ -735,13 +823,11 @@ class _MetricsPageState extends State<MetricsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Шапка с датой и показателями
             Row(
               children: [
                 if (date != null)
                   Text(
-                    '${date.day}.${date.month}.${date.year} '
-                    '${date.hour}:${date.minute.toString().padLeft(2, '0')}',
+                    '${date.day}.${date.month}.${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 const Spacer(),
@@ -756,8 +842,6 @@ class _MetricsPageState extends State<MetricsPage> {
               ],
             ),
             const SizedBox(height: 8),
-
-            // Текст поста
             if (postText.isNotEmpty) ...[
               Text(isExpanded ? postText : shortText),
               if (postText.length > maxPreviewLength)
@@ -773,55 +857,68 @@ class _MetricsPageState extends State<MetricsPage> {
                   ),
                 ),
             ],
-
-            // Фото
             photosWidget,
-
-            // Видео
             ...videoWidgets,
-
-            // Ссылки
             ...linkWidgets,
-
             const SizedBox(height: 8),
           ],
         ),
       ),
     );
   }
+
+  // Открытие галереи изображений
+  void _showImageGallery(List<String> imageUrls, int initialIndex) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(8),
+        child: _GalleryViewer(
+          imageUrls: imageUrls,
+          initialIndex: initialIndex,
+        ),
+      ),
+    );
+  }
+
+  // Декодирование ответа (UTF-8)
+  dynamic _decodeResponse(http.Response response) {
+    final bytes = response.bodyBytes;
+    final utf8Body = utf8.decode(bytes);
+    return json.decode(utf8Body);
+  }
 }
 
-/// Виджет для просмотра изображений в PageView
-class GalleryViewer extends StatefulWidget {
+// Виджет для просмотра набора фотографий
+class _GalleryViewer extends StatefulWidget {
   final List<String> imageUrls;
   final int initialIndex;
 
-  const GalleryViewer({
+  const _GalleryViewer({
     Key? key,
     required this.imageUrls,
-    this.initialIndex = 0,
+    required this.initialIndex,
   }) : super(key: key);
 
   @override
-  State<GalleryViewer> createState() => _GalleryViewerState();
+  State<_GalleryViewer> createState() => _GalleryViewerState();
 }
 
-class _GalleryViewerState extends State<GalleryViewer> {
-  late PageController _pageController;
+class _GalleryViewerState extends State<_GalleryViewer> {
+  late PageController _controller;
   late int _currentIndex;
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: _currentIndex);
+    _controller = PageController(initialPage: _currentIndex);
   }
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Заголовок с кнопкой "Закрыть"
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -829,27 +926,22 @@ class _GalleryViewerState extends State<GalleryViewer> {
               icon: const Icon(Icons.close),
               onPressed: () => Navigator.of(context).pop(),
             ),
-            Text(
-              '${_currentIndex + 1} / ${widget.imageUrls.length}',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(width: 40), // пустое место для центрирования
+            Text('${_currentIndex + 1} / ${widget.imageUrls.length}'),
+            const SizedBox(width: 40),
           ],
         ),
         const Divider(height: 1),
-
-        // Основной слайдер
         Expanded(
           child: PageView.builder(
-            controller: _pageController,
+            controller: _controller,
             itemCount: widget.imageUrls.length,
             onPageChanged: (index) {
               setState(() {
                 _currentIndex = index;
               });
             },
-            itemBuilder: (ctx, index) {
-              final url = widget.imageUrls[index];
+            itemBuilder: (ctx, i) {
+              final url = widget.imageUrls[i];
               return InteractiveViewer(
                 child: Image.network(url, fit: BoxFit.contain),
               );
